@@ -6,10 +6,12 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 import feedparser
 import urllib.parse
+import google.generativeai as genai
 
 # 환경 변수에서 키 불러오기 (GitHub Actions Secrets에서 주입됨)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 def get_stock_data(mode):
     """모드(morning/afternoon)에 따라 주요 주식 지수 변동을 가져옵니다."""
@@ -182,6 +184,101 @@ def get_twitter_news():
             
     return "\n".join(news_text)
 
+def generate_ai_briefing(stock_text, surging_text, news_text, twitter_text):
+    """제공된 데이터를 바탕으로 AI 투자 브리핑을 생성합니다."""
+    if not GEMINI_API_KEY:
+        return "⚠️ API 키가 설정되지 않아 AI 브리핑을 생성할 수 없습니다."
+        
+    system_prompt = """
+    You are an advanced investment intelligence and trend-following analysis assistant.
+    Your role is to:
+    - Analyze financial news, macroeconomic data, and market structure
+    - Identify trend direction and momentum across major asset classes
+    - Combine fundamental news with technical market context (trend-following perspective)
+    - Produce structured, actionable investment insights (not direct buy/sell advice)
+
+    Core focus:
+    1. Macro-driven market interpretation
+    2. Trend-following (momentum, trend strength, regime detection)
+    3. Risk awareness and volatility shifts
+    4. Sector rotation signals
+    5. Institutional sentiment inference
+
+    You should think like a systematic trend-following macro trader.
+    지구상의 모든 데이터를 분석해 수익을 내는 투자가 될 수 있도록 해.
+
+    반드시 다음의 출력 구조를 그대로 따르고, 내용을 한국어로 작성해:
+
+    [Daily Investment & Trend Briefing]
+
+    🧭 1. Market Regime (Trend State)
+    - Overall market regime: (상승장/하락장/횡보/전환기)
+    - Risk sentiment: (Risk-on / Risk-off / Mixed)
+    - Trend strength: (Strong / Weak / Shifting)
+
+    📈 2. Trend-Following View (Key Indices)
+    - S&P 500: 트렌드 방향 및 모멘텀
+    - Nasdaq: 트렌드 방향 및 모멘텀
+    - Russell 2000: 리스크 선호도 시그널
+    - DXY (Dollar Index): 매크로 압력 시그널
+    - US 10Y Yield: 매크로 레짐 인디케이터
+
+    📊 3. Sector Momentum (Rotation Signals)
+    - Strongest sectors:
+    - Weakest sectors:
+    - Emerging momentum sectors:
+
+    📰 4. Key News Impact (Market Drivers)
+    - 1.
+    - 2.
+    - 3.
+
+    ⚠️ 5. Risk Signals
+    - Trend breakdown risks:
+    - Macro shocks:
+    - Volatility expansion signals:
+
+    🚀 6. Opportunities (Trend-Following Lens)
+    - Assets in strong uptrend:
+    - Breakout candidates (macro-driven):
+    - Momentum continuation setups:
+
+    🧠 7. Final Insight (Trader Interpretation)
+    - 시장 체제, 트렌드 방향, 리스크 포지션 등을 종합 해석하여 3-5 문장으로 요약.
+
+    주의사항: 마크다운 기호(*, _, # 등)는 텔레그램 파싱 오류를 유발할 수 있으므로 절대 사용하지 말고, 문단을 명확하게 구분해.
+    """
+    
+    user_prompt = f"""
+    아래 수집된 데이터를 바탕으로 투자 브리핑을 작성해줘:
+    
+    [미국 지수 마감]
+    {stock_text}
+    
+    [미국 20% 이상 급등주]
+    {surging_text}
+    
+    [미국 경제 주요 뉴스]
+    {news_text}
+    
+    [주요 인사 최근 발언/트윗]
+    {twitter_text}
+    """
+    
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(
+            contents=[
+                {"role": "user", "parts": [system_prompt + "\n\n" + user_prompt]}
+            ]
+        )
+        # 텔레그램 전송 에러 방지용 마크다운 기호 필터링
+        text = response.text.replace('*', '').replace('#', '').replace('_', '').strip()
+        return text
+    except Exception as e:
+        return f"⚠️ AI 브리핑 생성 중 오류가 발생했습니다: {e}"
+
 def send_telegram_message(message):
     """텔레그램 봇을 통해 메시지를 전송합니다."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -216,7 +313,10 @@ def main():
         us_news_text = get_us_economy_news()
         twitter_news_text = get_twitter_news()
         
-        final_message = f"🌅 {today_str} 모닝 브리핑\n\n📈 [미국 증시 마감 시황]\n{stock_text}\n\n🔥 [미국 20% 이상 급등주]\n{us_surging_text}\n\n📊 [미국 경제 주요 뉴스]\n{us_news_text}\n\n🗣️ [주요 인사 최근 발언/트윗 동향]\n{twitter_news_text}"
+        print("AI 투자 브리핑 생성 중...")
+        ai_briefing = generate_ai_briefing(stock_text, us_surging_text, us_news_text, twitter_news_text)
+        
+        final_message = f"🌅 {today_str} 전문 투자 브리핑\n\n🧠 [AI Market Insight]\n{ai_briefing}\n\n=========================\n\n📈 [미국 증시 마감 시황]\n{stock_text}\n\n🔥 [미국 20% 이상 급등주]\n{us_surging_text}\n\n📊 [미국 경제 주요 뉴스]\n{us_news_text}\n\n🗣️ [주요 인사 최근 발언/트윗 동향]\n{twitter_news_text}"
         
         # 트위터 원문 링크 추가
         final_message += "\n\n🔗 공식 X(트위터) 원문 링크:\n"
